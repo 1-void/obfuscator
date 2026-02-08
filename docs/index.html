@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Obfuscator - Source Code Obfuscation Engine</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0a0f;--bg2:#12121a;--bg3:#1a1a25;
+  --text:#c8c8d4;--text-dim:#6a6a7a;--text-bright:#eaeaf0;
+  --accent:#00e5ff;--accent2:#7c4dff;--accent3:#00e676;
+  --border:#2a2a3a;
+  --mono:'JetBrains Mono','Fira Code','SF Mono','Cascadia Code',monospace;
+  --sans:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+}
+html{scroll-behavior:smooth;font-size:16px}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.7;-webkit-font-smoothing:antialiased}
+::selection{background:var(--accent2);color:#fff}
+a{color:var(--accent);text-decoration:none;transition:color .2s}
+a:hover{color:var(--accent3)}
+.container{max-width:900px;margin:0 auto;padding:0 2rem}
+section{padding:4rem 0;border-bottom:1px solid var(--border)}
+section:last-of-type{border-bottom:none}
+.hero{min-height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;position:relative;overflow:hidden;border-bottom:1px solid var(--border)}
+.hero::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse at 20% 50%,rgba(0,229,255,.06) 0%,transparent 50%),radial-gradient(ellipse at 80% 50%,rgba(124,77,255,.06) 0%,transparent 50%);pointer-events:none}
+.hero-badge{display:inline-block;padding:.35rem 1rem;border:1px solid var(--accent);border-radius:999px;font-family:var(--mono);font-size:.75rem;color:var(--accent);letter-spacing:.08em;text-transform:uppercase;margin-bottom:2rem}
+.hero h1{font-size:clamp(2.5rem,6vw,4.5rem);font-weight:800;color:var(--text-bright);line-height:1.1;letter-spacing:-.02em;margin-bottom:1rem}
+.hero h1 span{background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.hero-sub{font-size:1.2rem;color:var(--text-dim);max-width:600px;margin:0 auto 2.5rem}
+.hero-cta{display:inline-flex;align-items:center;gap:.5rem;padding:.75rem 2rem;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;font-weight:600;border-radius:8px;font-size:.95rem;transition:transform .2s,box-shadow .2s}
+.hero-cta:hover{transform:translateY(-2px);color:#fff;box-shadow:0 8px 30px rgba(0,229,255,.25)}
+.hero-version{margin-top:1.5rem;font-family:var(--mono);font-size:.8rem;color:var(--text-dim)}
+nav{position:sticky;top:0;z-index:100;background:rgba(10,10,15,.85);backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
+nav .container{display:flex;align-items:center;justify-content:space-between;height:56px}
+nav .logo{font-family:var(--mono);font-weight:700;color:var(--text-bright);font-size:1rem}
+nav .logo span{color:var(--accent)}
+nav ul{list-style:none;display:flex;gap:1.5rem}
+nav a{font-size:.85rem;color:var(--text-dim);font-weight:500}
+nav a:hover{color:var(--accent)}
+.section-label{font-family:var(--mono);font-size:.75rem;color:var(--accent);letter-spacing:.1em;text-transform:uppercase;margin-bottom:.75rem}
+h2{font-size:2rem;font-weight:700;color:var(--text-bright);margin-bottom:1rem;letter-spacing:-.01em}
+h3{font-size:1.25rem;font-weight:600;color:var(--text-bright);margin:2rem 0 .75rem}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1.25rem;margin-top:2rem}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:1.5rem;transition:border-color .2s,transform .2s}
+.card:hover{border-color:var(--accent);transform:translateY(-2px)}
+.card-icon{width:40px;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1.2rem;margin-bottom:1rem;background:rgba(0,229,255,.08);color:var(--accent)}
+.card h4{font-size:1rem;font-weight:600;color:var(--text-bright);margin-bottom:.5rem}
+.card p{font-size:.88rem;color:var(--text-dim);line-height:1.6}
+pre{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:1.25rem 1.5rem;overflow-x:auto;font-family:var(--mono);font-size:.82rem;line-height:1.7;color:var(--text);margin:1.25rem 0}
+code{font-family:var(--mono);font-size:.88em}
+p code,li code{background:var(--bg3);padding:.15em .4em;border-radius:4px;font-size:.85em;color:var(--accent)}
+.table-wrap{overflow-x:auto;margin:1.5rem 0}
+table{width:100%;border-collapse:collapse;font-size:.88rem}
+th{text-align:left;padding:.75rem 1rem;background:var(--bg2);color:var(--accent);font-family:var(--mono);font-size:.78rem;letter-spacing:.05em;text-transform:uppercase;border-bottom:2px solid var(--border)}
+td{padding:.75rem 1rem;border-bottom:1px solid var(--border);color:var(--text)}
+tr:hover td{background:rgba(0,229,255,.02)}
+.comparison{display:grid;grid-template-columns:1fr 1fr;gap:1.25rem;margin:1.5rem 0}
+.comparison>div{position:relative}
+.comparison label{display:block;font-family:var(--mono);font-size:.7rem;color:var(--text-dim);letter-spacing:.08em;text-transform:uppercase;margin-bottom:.5rem;padding-left:.25rem}
+.comparison pre{margin:0}
+.flow{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:.75rem;margin:2rem 0}
+.flow-step{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:.75rem 1.25rem;font-family:var(--mono);font-size:.8rem;color:var(--text-bright);text-align:center;min-width:130px}
+.flow-arrow{color:var(--accent);font-size:1.2rem}
+.arch-list{list-style:none;margin:1.5rem 0}
+.arch-list li{padding:1rem 1.25rem;border-left:3px solid var(--border);margin-bottom:.75rem;transition:border-color .2s}
+.arch-list li:hover{border-color:var(--accent)}
+.arch-list .li-label{font-family:var(--mono);font-size:.78rem;color:var(--accent);display:block;margin-bottom:.25rem}
+.arch-list .li-text{font-size:.9rem;color:var(--text)}
+footer{padding:3rem 0;text-align:center;border-top:1px solid var(--border)}
+footer p{font-size:.82rem;color:var(--text-dim)}
+@media(max-width:640px){.container{padding:0 1.25rem}section{padding:3rem 0}.comparison{grid-template-columns:1fr}nav ul{gap:.75rem}nav a{font-size:.78rem}.hero h1{font-size:2rem}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:none}}
+.hero-badge,.hero h1,.hero-sub,.hero-cta,.hero-version{animation:fadeUp .6s ease both}
+.hero h1{animation-delay:.1s}.hero-sub{animation-delay:.2s}.hero-cta{animation-delay:.3s}.hero-version{animation-delay:.4s}
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <span class="hero-badge">Open Source</span>
+  <h1>Source Code <span>Obfuscation</span> Engine</h1>
+  <p class="hero-sub">Transform your Rust codebase into an unreadable maze. Semantic-aware renaming, control flow flattening, and dead code injection — all while preserving functionality.</p>
+  <a href="#install" class="hero-cta">Get Started →</a>
+  <p class="hero-version">v0.1.0 · Built with rust-analyzer</p>
+</div>
+
+<nav>
+  <div class="container">
+    <div class="logo">obfuscator<span>.</span>rs</div>
+    <ul>
+      <li><a href="#features">Features</a></li>
+      <li><a href="#install">Install</a></li>
+      <li><a href="#usage">Usage</a></li>
+      <li><a href="#modes">Modes</a></li>
+      <li><a href="#architecture">Architecture</a></li>
+      <li><a href="https://github.com/1-void/obfuscator">GitHub</a></li>
+    </ul>
+  </div>
+</nav>
+
+<section id="features">
+  <div class="container">
+    <p class="section-label">// capabilities</p>
+    <h2>What it does</h2>
+    <p>A multi-language obfuscation toolkit powered by rust-analyzer's semantic analysis. Designed for protecting proprietary code and stripping PII before sharing.</p>
+    <div class="grid">
+      <div class="card">
+        <div class="card-icon">λ</div>
+        <h4>Semantic Renaming</h4>
+        <p>Uses rust-analyzer to rename identifiers across your entire codebase while respecting scope, visibility, and macro boundaries.</p>
+      </div>
+      <div class="card">
+        <div class="card-icon">⬡</div>
+        <h4>Control Flow Flattening</h4>
+        <p>Transforms sequential code into state-machine loops, making reverse engineering significantly harder.</p>
+      </div>
+      <div class="card">
+        <div class="card-icon">◇</div>
+        <h4>Dead Code Injection</h4>
+        <p>Inserts meaningless computations that execute but produce no side effects, cluttering static analysis.</p>
+      </div>
+      <div class="card">
+        <div class="card-icon">⊘</div>
+        <h4>Opaque Predicates</h4>
+        <p>Wraps code blocks in always-true conditions that are difficult for decompilers to optimize away.</p>
+      </div>
+      <div class="card">
+        <div class="card-icon">⌁</div>
+        <h4>String Encryption</h4>
+        <p>XOR-encodes string literals at compile time, decoded at runtime to hide sensitive text from binaries.</p>
+      </div>
+      <div class="card">
+        <div class="card-icon">⊗</div>
+        <h4>PII Stripping</h4>
+        <p>Automatically redacts emails, local paths, and author information. Configures release builds to strip symbols.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="container">
+    <p class="section-label">// setup</p>
+    <h2>Installation</h2>
+    <p>Clone the repository and build with Cargo. Requires Rust 1.70+ with the 2021 edition.</p>
+    <pre><code><span style="color:var(--text-dim)"># Clone the repository</span>
+git clone https://github.com/1-void/obfuscator.git
+cd obfuscator
+
+<span style="color:var(--text-dim)"># Build release binary</span>
+cargo build --release
+
+<span style="color:var(--text-dim)"># Optional: install to PATH</span>
+cargo install --path .</code></pre>
+  </div>
+</section>
+
+<section id="usage">
+  <div class="container">
+    <p class="section-label">// commands</p>
+    <h2>Usage</h2>
+    <pre><code>obfuscator --input ./my-project --output ./obfuscated</code></pre>
+    <h3>CLI Options</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Flag</th><th>Description</th><th>Default</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>-i, --input</code></td><td>Source directory to obfuscate</td><td>Required</td></tr>
+          <tr><td><code>-o, --output</code></td><td>Destination directory for output</td><td>Required</td></tr>
+          <tr><td><code>--mode</code></td><td>Obfuscation level: <code>safe</code> or <code>aggressive</code></td><td><code>safe</code></td></tr>
+          <tr><td><code>--strip-pii</code></td><td>Remove emails, paths, author info</td><td><code>false</code></td></tr>
+          <tr><td><code>--seed</code></td><td>Deterministic RNG seed for reproducible output</td><td>Random</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3>Example: Full Obfuscation</h3>
+    <pre><code>obfuscator \
+  --input ./src \
+  --output ./dist \
+  --mode aggressive \
+  --strip-pii \
+  --seed 0xDEADBEEF</code></pre>
+  </div>
+</section>
+
+<section id="modes">
+  <div class="container">
+    <p class="section-label">// profiles</p>
+    <h2>Obfuscation Modes</h2>
+    <div class="grid" style="grid-template-columns:1fr 1fr">
+      <div class="card">
+        <h4>Safe Mode</h4>
+        <p>Renames private identifiers only. Preserves public API, comments, and formatting. Best for code sharing where compilation must be guaranteed.</p>
+        <ul style="margin-top:1rem;font-size:.85rem;color:var(--text-dim)">
+          <li>✓ Identifier renaming</li>
+          <li>✓ PII stripping (if enabled)</li>
+          <li>✗ Dead code injection</li>
+          <li>✗ Control flow changes</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h4>Aggressive Mode</h4>
+        <p>Maximum obfuscation. Applies all transformations including string encryption, control flow flattening, and opaque predicates.</p>
+        <ul style="margin-top:1rem;font-size:.85rem;color:var(--text-dim)">
+          <li>✓ Everything in Safe</li>
+          <li>✓ String literal encryption</li>
+          <li>✓ Dead code injection</li>
+          <li>✓ Control flow flattening</li>
+          <li>✓ Opaque predicates</li>
+          <li>✓ HTML/JS/CSS minification</li>
+        </ul>
+      </div>
+    </div>
+    <h3>Before / After</h3>
+    <div class="comparison">
+      <div>
+        <label>input.rs</label>
+        <pre><code>fn calculate_total(items: &[Item]) -> u32 {
+    let mut sum = 0;
+    for item in items {
+        sum += item.price;
+    }
+    sum
+}</code></pre>
+      </div>
+      <div>
+        <label>output.rs (aggressive)</label>
+        <pre><code>fn jx8kqmvnp2(&[wt3hfyc9]: &[Item]) -> u32 {
+    let mut state = 0i32;
+    loop {
+        match state {
+            0 => { let mut k9vmqxh = 0; state = 1; }
+            1 => { if (23+19) == 42 {
+                for r7bnxw in wt3hfyc9 {
+                    k9vmqxh += r7bnxw.f4jmvqp;
+                }
+            } state = 2; }
+            2 => { return k9vmqxh; }
+            _ => break
+        }
+    }
+}</code></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="supported">
+  <div class="container">
+    <p class="section-label">// file types</p>
+    <h2>Supported Languages</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Extension</th><th>Safe Mode</th><th>Aggressive Mode</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>.rs</code></td><td>Semantic renaming, PII strip</td><td>+ Dead code, control flow, string encryption</td></tr>
+          <tr><td><code>.js</code> / <code>.ts</code></td><td>PII stripping only</td><td>+ Comment removal, whitespace minification</td></tr>
+          <tr><td><code>.html</code></td><td>PII stripping only</td><td>+ Comment removal, whitespace collapse</td></tr>
+          <tr><td><code>.css</code></td><td>PII stripping only</td><td>+ Comment removal, minification</td></tr>
+          <tr><td><code>Cargo.toml</code></td><td>Author removal</td><td>+ Release profile hardening</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="architecture">
+  <div class="container">
+    <p class="section-label">// internals</p>
+    <h2>How It Works</h2>
+    <div class="flow">
+      <div class="flow-step">Parse Source</div>
+      <span class="flow-arrow">→</span>
+      <div class="flow-step">Index Definitions</div>
+      <span class="flow-arrow">→</span>
+      <div class="flow-step">Plan Renames</div>
+      <span class="flow-arrow">→</span>
+      <div class="flow-step">Transform AST</div>
+      <span class="flow-arrow">→</span>
+      <div class="flow-step">Emit Code</div>
+    </div>
+    <ul class="arch-list">
+      <li>
+        <span class="li-label">rust-analyzer integration</span>
+        <span class="li-text">Uses <code>ra_ap_ide</code> for semantic analysis, ensuring renames are valid across module boundaries, trait impls, and re-exports.</span>
+      </li>
+      <li>
+        <span class="li-label">syn / quote AST manipulation</span>
+        <span class="li-text">Parses Rust with <code>syn</code> and rewrites the token stream with <code>quote</code>, enabling fine-grained transformations like opaque predicate insertion.</span>
+      </li>
+      <li>
+        <span class="li-label">Macro-aware rewriting</span>
+        <span class="li-text">Custom token stream visitor ensures identifiers inside macros (e.g., <code>println!</code>) are renamed consistently with their definitions.</span>
+      </li>
+      <li>
+        <span class="li-label">Deterministic output</span>
+        <span class="li-text">Optional seed parameter guarantees reproducible obfuscation — same input + seed = same output.</span>
+      </li>
+    </ul>
+  </div>
+</section>
+
+<section id="protected">
+  <div class="container">
+    <p class="section-label">// safety</p>
+    <h2>What's Protected</h2>
+    <p>The obfuscator is designed to preserve functionality. These items are never renamed:</p>
+    <div class="grid" style="grid-template-columns:repeat(3,1fr)">
+      <div class="card">
+        <h4>Keywords & Builtins</h4>
+        <p><code>fn</code>, <code>let</code>, <code>impl</code>, <code>Self</code>, <code>main</code>, etc.</p>
+      </div>
+      <div class="card">
+        <h4>Public API</h4>
+        <p>Items marked <code>pub</code> retain their names for external compatibility.</p>
+      </div>
+      <div class="card">
+        <h4>FFI Boundaries</h4>
+        <p>Items with <code>#[no_mangle]</code>, <code>#[export_name]</code>, or <code>#[link_name]</code>.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <p>Built with Rust · MIT License · <a href="https://github.com/1-void/obfuscator">View on GitHub</a></p>
+  </div>
+</footer>
+
+</body>
+</html>
