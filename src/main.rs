@@ -1,18 +1,20 @@
 use clap::{Parser, ValueEnum};
 use proc_macro2::Ident;
+use proc_macro2::{Delimiter, Group, Punct, TokenStream, TokenTree};
 use quote::ToTokens;
-use rand::{distr::Alphanumeric, rngs::SmallRng, Rng, SeedableRng};
 use ra_ap_ide::{AnalysisHost, FilePosition, RenameConfig, SourceChange};
-use ra_ap_ide_db::FileId;
 use ra_ap_ide_db::text_edit::TextEdit;
+use ra_ap_ide_db::FileId;
 use ra_ap_load_cargo::{load_workspace_at, LoadCargoConfig, ProcMacroServerChoice};
 use ra_ap_project_model::CargoConfig;
-use ra_ap_syntax::{ast, AstNode, TextRange};
 use ra_ap_syntax::ast::{HasAttrs, HasModuleItem, HasName, HasVisibility};
+use ra_ap_syntax::{ast, AstNode, TextRange};
+use rand::{distr::Alphanumeric, rngs::SmallRng, Rng, SeedableRng};
 use regex::{Captures, Regex};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
+use syn::visit::Visit;
 use syn::visit_mut::{self, VisitMut};
 use walkdir::WalkDir;
 
@@ -159,6 +161,166 @@ impl Obfuscator {
         format!("{}{}", first, name)
     }
 
+    fn index_rust_definitions_in_content(&mut self, content: &str) {
+        let Ok(file) = syn::parse_str::<syn::File>(content) else {
+            return;
+        };
+
+        struct Collector<'a> {
+            ob: &'a mut Obfuscator,
+            current_item_is_public: bool,
+        }
+
+        impl<'a> Collector<'a> {
+            fn maybe_add(&mut self, ident: &Ident, force: bool) {
+                let name = ident.to_string();
+                if force || (!self.current_item_is_public && self.ob.should_obfuscate_name(&name)) {
+                    self.ob.internal_definitions.insert(name);
+                }
+            }
+
+            fn vis_is_public(vis: &syn::Visibility) -> bool {
+                matches!(vis, syn::Visibility::Public(_))
+            }
+        }
+
+        impl<'a> syn::visit::Visit<'_> for Collector<'a> {
+            fn visit_item_fn(&mut self, i: &syn::ItemFn) {
+                let was_public = self.current_item_is_public;
+                self.current_item_is_public = Self::vis_is_public(&i.vis);
+                self.maybe_add(&i.sig.ident, false);
+
+                // Always treat locals/args as internal regardless of fn visibility.
+                syn::visit::visit_signature(self, &i.sig);
+                syn::visit::visit_block(self, &i.block);
+
+                self.current_item_is_public = was_public;
+            }
+
+            fn visit_item_struct(&mut self, i: &syn::ItemStruct) {
+                let was_public = self.current_item_is_public;
+                self.current_item_is_public = Self::vis_is_public(&i.vis);
+                self.maybe_add(&i.ident, false);
+                for field in i.fields.iter() {
+                    if matches!(field.vis, syn::Visibility::Public(_)) {
+                        continue;
+                    }
+                    if let Some(ident) = &field.ident {
+                        self.maybe_add(ident, false);
+                    }
+                }
+                syn::visit::visit_item_struct(self, i);
+                self.current_item_is_public = was_public;
+            }
+
+            fn visit_item_enum(&mut self, i: &syn::ItemEnum) {
+                let was_public = self.current_item_is_public;
+                self.current_item_is_public = Self::vis_is_public(&i.vis);
+                self.maybe_add(&i.ident, false);
+                if !self.current_item_is_public {
+                    for v in &i.variants {
+                        self.maybe_add(&v.ident, true);
+                    }
+                }
+                syn::visit::visit_item_enum(self, i);
+                self.current_item_is_public = was_public;
+            }
+
+            fn visit_item_mod(&mut self, i: &syn::ItemMod) {
+                let was_public = self.current_item_is_public;
+                self.current_item_is_public = Self::vis_is_public(&i.vis);
+                self.maybe_add(&i.ident, false);
+                syn::visit::visit_item_mod(self, i);
+                self.current_item_is_public = was_public;
+            }
+
+            fn visit_item_type(&mut self, i: &syn::ItemType) {
+                let was_public = self.current_item_is_public;
+                self.current_item_is_public = Self::vis_is_public(&i.vis);
+                self.maybe_add(&i.ident, false);
+                syn::visit::visit_item_type(self, i);
+                self.current_item_is_public = was_public;
+            }
+
+            fn visit_item_trait(&mut self, i: &syn::ItemTrait) {
+                // Be conservative: rename trait name only if it's not public.
+                let was_public = self.current_item_is_public;
+                self.current_item_is_public = Self::vis_is_public(&i.vis);
+                self.maybe_add(&i.ident, false);
+                syn::visit::visit_item_trait(self, i);
+                self.current_item_is_public = was_public;
+            }
+
+            fn visit_item_const(&mut self, i: &syn::ItemConst) {
+                let name = i.ident.to_string();
+                if self.ob.should_obfuscate_name(&name) {
+                    self.ob.internal_definitions.insert(name);
+                }
+                syn::visit::visit_item_const(self, i);
+            }
+
+            fn visit_item_static(&mut self, i: &syn::ItemStatic) {
+                let name = i.ident.to_string();
+                if self.ob.should_obfuscate_name(&name) {
+                    self.ob.internal_definitions.insert(name);
+                }
+                syn::visit::visit_item_static(self, i);
+            }
+
+            fn visit_impl_item_fn(&mut self, i: &syn::ImplItemFn) {
+                // Only rename private impl methods.
+                if matches!(i.vis, syn::Visibility::Public(_)) {
+                    syn::visit::visit_impl_item_fn(self, i);
+                    return;
+                }
+                self.maybe_add(&i.sig.ident, true);
+                syn::visit::visit_signature(self, &i.sig);
+                syn::visit::visit_block(self, &i.block);
+            }
+
+            fn visit_pat_ident(&mut self, i: &syn::PatIdent) {
+                let name = i.ident.to_string();
+                if self.ob.should_obfuscate_name(&name) {
+                    self.ob.internal_definitions.insert(name);
+                }
+                syn::visit::visit_pat_ident(self, i);
+            }
+        }
+
+        let mut collector = Collector {
+            ob: self,
+            current_item_is_public: false,
+        };
+        collector.visit_file(&file);
+    }
+
+    fn index_rust_definitions_in_dir(
+        &mut self,
+        input_root: &std::path::Path,
+        entries: &[walkdir::DirEntry],
+    ) -> anyhow::Result<()> {
+        // Ensure deterministic ordering for the collected identifier set.
+        let mut rust_paths: Vec<_> = entries
+            .iter()
+            .filter_map(|e| {
+                let p = e.path();
+                if p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("rs") {
+                    Some(p.to_path_buf())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        rust_paths.sort();
+
+        for path in rust_paths {
+            let content = fs::read_to_string(&path)?;
+            let _ = input_root; // kept for future filtering; currently unused
+            self.index_rust_definitions_in_content(&content);
+        }
+        Ok(())
+    }
+
     fn obfuscate_name(&mut self, original: &str) -> String {
         if self.protected_names.contains(original) {
             return original.to_string();
@@ -203,8 +365,14 @@ impl Obfuscator {
         result
     }
 
-    fn plan_rust_renames(&mut self, input_root: &std::path::Path) -> anyhow::Result<RustRenamePlan> {
-        let cargo_config = CargoConfig { set_test: true, ..CargoConfig::default() };
+    fn plan_rust_renames(
+        &mut self,
+        input_root: &std::path::Path,
+    ) -> anyhow::Result<RustRenamePlan> {
+        let cargo_config = CargoConfig {
+            set_test: true,
+            ..CargoConfig::default()
+        };
         let load_config = LoadCargoConfig {
             load_out_dirs_from_check: false,
             with_proc_macro_server: ProcMacroServerChoice::None,
@@ -261,7 +429,10 @@ impl Obfuscator {
                         continue;
                     }
                 };
-                let position = FilePosition { file_id: target.file_id, offset: target.range.start() };
+                let position = FilePosition {
+                    file_id: target.file_id,
+                    offset: target.range.start(),
+                };
                 let rename_result = analysis.rename(position, &new_name, &rename_config);
                 let Ok(rename_result) = rename_result else {
                     skipped += 1;
@@ -288,7 +459,11 @@ impl Obfuscator {
             }
         }
 
-        Ok(RustRenamePlan { edits_by_path, renamed, skipped })
+        Ok(RustRenamePlan {
+            edits_by_path,
+            renamed,
+            skipped,
+        })
     }
 
     fn should_obfuscate_name(&self, name: &str) -> bool {
@@ -313,7 +488,11 @@ impl Obfuscator {
         None
     }
 
-    fn collect_rename_targets(&self, file_id: FileId, source_file: &ast::SourceFile) -> Vec<RenameTarget> {
+    fn collect_rename_targets(
+        &self,
+        file_id: FileId,
+        source_file: &ast::SourceFile,
+    ) -> Vec<RenameTarget> {
         let mut targets = Vec::new();
 
         for item in source_file.items() {
@@ -362,7 +541,11 @@ impl Obfuscator {
             }
         }
 
-        for assoc in source_file.syntax().descendants().filter_map(ast::AssocItem::cast) {
+        for assoc in source_file
+            .syntax()
+            .descendants()
+            .filter_map(ast::AssocItem::cast)
+        {
             match assoc {
                 ast::AssocItem::Fn(node) => {
                     if !self.item_is_public(&node) && !self.has_protected_attr(&node) {
@@ -383,21 +566,33 @@ impl Obfuscator {
             }
         }
 
-        for field in source_file.syntax().descendants().filter_map(ast::RecordField::cast) {
+        for field in source_file
+            .syntax()
+            .descendants()
+            .filter_map(ast::RecordField::cast)
+        {
             if self.item_is_public(&field) {
                 continue;
             }
             self.push_named_target(file_id, field.name(), &mut targets);
         }
 
-        for variant in source_file.syntax().descendants().filter_map(ast::Variant::cast) {
+        for variant in source_file
+            .syntax()
+            .descendants()
+            .filter_map(ast::Variant::cast)
+        {
             if self.variant_is_public(&variant) {
                 continue;
             }
             self.push_named_target(file_id, variant.name(), &mut targets);
         }
 
-        for pat in source_file.syntax().descendants().filter_map(ast::IdentPat::cast) {
+        for pat in source_file
+            .syntax()
+            .descendants()
+            .filter_map(ast::IdentPat::cast)
+        {
             self.push_named_target(file_id, pat.name(), &mut targets);
         }
 
@@ -440,9 +635,13 @@ impl Obfuscator {
 
     fn has_protected_attr<T: HasAttrs>(&self, node: &T) -> bool {
         let protected = ["no_mangle", "export_name", "link_name"];
-        node.attrs().filter_map(|attr| self.attr_name(&attr)).any(|name| {
-            protected.iter().any(|protected_name| name == *protected_name)
-        })
+        node.attrs()
+            .filter_map(|attr| self.attr_name(&attr))
+            .any(|name| {
+                protected
+                    .iter()
+                    .any(|protected_name| name == *protected_name)
+            })
     }
 
     fn attr_name(&self, attr: &ast::Attr) -> Option<String> {
@@ -759,7 +958,11 @@ impl RustRenamePlan {
 
 impl VisitMut for Obfuscator {
     fn visit_ident_mut(&mut self, i: &mut Ident) {
-        let _ = i;
+        let original = i.to_string();
+        let obfuscated = self.obfuscate_name(&original);
+        if obfuscated != original {
+            *i = Ident::new(&obfuscated, i.span());
+        }
     }
 
     fn visit_expr_mut(&mut self, expr: &mut syn::Expr) {
@@ -841,10 +1044,60 @@ impl VisitMut for Obfuscator {
     }
 
     fn visit_member_mut(&mut self, i: &mut syn::Member) {
+        if let syn::Member::Named(ident) = i {
+            let original = ident.to_string();
+            let obfuscated = self.obfuscate_name(&original);
+            if obfuscated != original {
+                *ident = Ident::new(&obfuscated, ident.span());
+            }
+        }
         visit_mut::visit_member_mut(self, i);
     }
 
     fn visit_macro_mut(&mut self, i: &mut syn::Macro) {
+        // syn doesn't parse inside macro token streams; we do a token-level rewrite
+        // so renames remain consistent (e.g. `println!("{}", data.field_a)`).
+        fn rewrite_tokens(ob: &mut Obfuscator, ts: TokenStream) -> TokenStream {
+            let mut out = TokenStream::new();
+            let mut prev_was_apostrophe = false;
+            for tt in ts {
+                match tt {
+                    TokenTree::Ident(id) => {
+                        if prev_was_apostrophe {
+                            // Likely a lifetime like `'a` in macro input; leave alone.
+                            out.extend([TokenTree::Ident(id)]);
+                        } else {
+                            let original = id.to_string();
+                            let obfuscated = ob.obfuscate_name(&original);
+                            if obfuscated != original {
+                                out.extend([TokenTree::Ident(Ident::new(&obfuscated, id.span()))]);
+                            } else {
+                                out.extend([TokenTree::Ident(id)]);
+                            }
+                        }
+                        prev_was_apostrophe = false;
+                    }
+                    TokenTree::Group(g) => {
+                        let delim: Delimiter = g.delimiter();
+                        let mut new_g = Group::new(delim, rewrite_tokens(ob, g.stream()));
+                        new_g.set_span(g.span());
+                        out.extend([TokenTree::Group(new_g)]);
+                        prev_was_apostrophe = false;
+                    }
+                    TokenTree::Punct(p) => {
+                        prev_was_apostrophe = p.as_char() == '\'';
+                        out.extend([TokenTree::Punct(Punct::new(p.as_char(), p.spacing()))]);
+                    }
+                    TokenTree::Literal(l) => {
+                        out.extend([TokenTree::Literal(l)]);
+                        prev_was_apostrophe = false;
+                    }
+                }
+            }
+            out
+        }
+
+        i.tokens = rewrite_tokens(self, i.tokens.clone());
         visit_mut::visit_macro_mut(self, i);
     }
 }
@@ -864,21 +1117,10 @@ fn main() -> anyhow::Result<()> {
         .filter_map(|e| e.ok())
         .collect();
 
-    let rename_plan = match obfuscator.plan_rust_renames(&input_root) {
-        Ok(plan) => {
-            if plan.renamed > 0 {
-                eprintln!(
-                    "Rust renames planned: {} applied, {} skipped.",
-                    plan.renamed, plan.skipped
-                );
-            }
-            Some(plan)
-        }
-        Err(err) => {
-            eprintln!("Rust rename planning failed: {err}");
-            None
-        }
-    };
+    // Index all Rust identifiers we consider "internal" so renames are consistent across files.
+    // (We avoid rust-analyzer rename here because it doesn't reliably update identifiers that
+    // appear inside macro token streams, which can easily break compilation.)
+    obfuscator.index_rust_definitions_in_dir(&input_root, &entries)?;
 
     for entry in &entries {
         let path = entry.path();
@@ -909,11 +1151,6 @@ fn main() -> anyhow::Result<()> {
                 }
                 Some("rs") => {
                     let content = fs::read_to_string(path)?;
-                    let content = if let Some(plan) = &rename_plan {
-                        plan.apply(path, &content)
-                    } else {
-                        content
-                    };
                     fs::write(output_path, obfuscator.process_rust(&content))?;
                 }
                 _ => {
@@ -928,4 +1165,79 @@ fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_pii_removes_email_and_home_paths() {
+        let ob = Obfuscator::new(true, Mode::Safe, Some(1));
+        let input = "email: john.doe+test@example.org path: /home/john/projects/x and /etc/hosts";
+        let out = ob.strip_pii_content(input);
+        assert!(out.contains("user@example.com"));
+        assert!(out.contains("/redacted/path"));
+        // Non-home paths should remain.
+        assert!(out.contains("/etc/hosts"));
+    }
+
+    #[test]
+    fn aggressive_minifies_html_js_css() {
+        let mut ob = Obfuscator::new(false, Mode::Aggressive, Some(1));
+
+        let html = "<div>\n  <!-- c -->\n  <span> hi </span>\n</div>\n";
+        let out_html = ob.process_html(html);
+        assert!(!out_html.contains("<!--"));
+        assert!(!out_html.contains(">\n<"));
+
+        let js = "/* block */\nconst  x  =  1; // line\n\nconsole.log(x);\n";
+        let out_js = ob.process_js(js);
+        assert!(!out_js.contains("block"));
+        assert!(!out_js.contains("//"));
+        assert!(!out_js.contains("  "));
+
+        let css = "/* c */\n.my {  color :  red ; }\n";
+        let out_css = ob.process_css(css);
+        assert!(!out_css.contains("/*"));
+        assert!(out_css.contains("{color:red;}"));
+    }
+
+    #[test]
+    fn macro_tokens_get_renamed_consistently() {
+        let content = r#"
+fn main() {
+    let data = 10;
+    println!("{}", data);
+}
+"#;
+
+        let mut ob = Obfuscator::new(false, Mode::Safe, Some(1));
+        ob.index_rust_definitions_in_content(content);
+        let out = ob.process_rust(content);
+
+        let new_name = ob
+            .mapping
+            .get("data")
+            .expect("mapping for data should exist")
+            .clone();
+
+        assert!(
+            out.matches(&new_name).count() >= 2,
+            "expected renamed ident to appear in binding and macro input"
+        );
+        let data_re = Regex::new(r"\\bdata\\b").unwrap();
+        assert!(
+            !data_re.is_match(&out),
+            "original ident should not remain after rename"
+        );
+    }
+
+    #[test]
+    fn encode_string_literal_roundtrips() {
+        let mut ob = Obfuscator::new(false, Mode::Aggressive, Some(1));
+        let (encoded, key) = ob.encode_string_literal("hello");
+        let decoded: Vec<u8> = encoded.into_iter().map(|b| b ^ key).collect();
+        assert_eq!(String::from_utf8(decoded).unwrap(), "hello");
+    }
 }

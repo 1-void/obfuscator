@@ -20,3 +20,6 @@ ra_ap_syntax = "0.0.316"
 regex = "1.12.2"
 syn = { version = "2.0.114", features = ["full", "visit", "visit-mut"] }
 walkdir = "2.5.0"
+
+[dev-dependencies]
+tempfile = "3.20.0"
