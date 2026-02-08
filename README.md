@@ -7,4 +7,4 @@ The long-term goal is to help mitigate AI fingerprinting techniques across vario
 
 **Recommendation regarding dependencies**
 
-I strongly advise against vendoring (bundling) any external packages into the project. In practice, this approach tends to create significant maintenance and compatibility issues over time.
+I strongly advise against vendoring (bundling) any external packages into the project you aim to obfuscate. In practice, this approach tends to create significant maintenance and compatibility issues over time.
